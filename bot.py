@@ -187,7 +187,7 @@ async def parse_with_claude(text: str = None, image_bytes: bytes = None, mime: s
         raise ValueError("Нужен текст или изображение")
  
     payload = {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-5",
         "max_tokens": 1000,
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": content}]
