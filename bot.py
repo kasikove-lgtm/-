@@ -300,15 +300,16 @@ async def process_input(msg: Message, text: str = None, image_bytes: bytes = Non
  
     await wait.delete()
  
-    db_set(f"pending_{uid}", {
-        "items": items,
-        "date": str(today_msk()),
-    })
- 
     n = len(items)
     header = f"Нашёл *{n} товар{'а' if 2 <= n <= 4 else 'ов' if n >= 5 else ''}*:\n\n" if n > 1 else ""
     text_out = header + fmt_all_items(items) + "\n\n*Всё верно?*"
-    await msg.answer(text_out, parse_mode="Markdown", reply_markup=build_confirm_kb())
+    sent = await msg.answer(text_out, parse_mode="Markdown", reply_markup=build_confirm_kb())
+ 
+    # Сохраняем по ID отправленного сообщения с кнопками
+    db_set(f"pending_{sent.message_id}", {
+        "items": items,
+        "date": str(today_msk()),
+    })
  
  
 @dp.message(F.text & ~F.text.startswith("/"))
@@ -338,7 +339,7 @@ async def handle_document(msg: Message):
  
 @dp.callback_query(F.data == "confirm_no")
 async def confirm_no(cb: CallbackQuery):
-    db_del(f"pending_{cb.from_user.id}")
+    db_del(f"pending_{cb.message.message_id}")
     await cb.message.edit_text("❌ Отменено.")
  
  
@@ -363,7 +364,9 @@ async def confirm_yes(cb: CallbackQuery):
  
 async def save_to_sheet(cb: CallbackQuery, pay_method: str):
     uid = cb.from_user.id
-    pending = db_get(f"pending_{uid}")
+    msg_id = cb.message.message_id
+    pending = db_get(f"pending_{msg_id}")
+    log.info(f"save_to_sheet: uid={uid} msg_id={msg_id} pending={'found' if pending else 'MISSING'}")
  
     if not pending:
         await cb.answer("Нет данных для записи", show_alert=True)
@@ -398,7 +401,7 @@ async def save_to_sheet(cb: CallbackQuery, pay_method: str):
         )
         return
  
-    db_del(f"pending_{uid}")
+    db_del(f"pending_{msg_id}")
     n = len(rows)
     await cb.message.edit_text(
         cb.message.text + f"\n\n✅ Записано {n} стр.! ({pay_method})",
@@ -425,3 +428,4 @@ async def main():
  
 if __name__ == "__main__":
     asyncio.run(main())
+ 
