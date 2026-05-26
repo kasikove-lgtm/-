@@ -1,7 +1,7 @@
 """
 Сметчик для флип-проекта
 aiogram 3.7 + Claude API + Google Sheets
-Поддержка нескольких товаров из одного чека
+Проекты + несколько товаров из одного чека
 """
  
 import os
@@ -39,25 +39,14 @@ os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = DATA_DIR + "/flip_bot"
  
 CATEGORIES = [
-    "Черновые материалы",
-    "Чистовые материалы",
-    "Сантехника",
-    "Электрика",
-    "Мебель",
-    "Техника",
-    "Демонтажные работы",
-    "Ремонтные услуги",
-    "Вывоз мусора",
-    "Доставка",
-    "Сделка покупки",
-    "Сделка продажи",
-    "Непредвиденные",
+    "Черновые материалы", "Чистовые материалы", "Сантехника", "Электрика",
+    "Мебель", "Техника", "Демонтажные работы", "Ремонтные услуги",
+    "Вывоз мусора", "Доставка", "Сделка покупки", "Сделка продажи", "Непредвиденные",
 ]
  
 SHEET_HEADERS = [
-    "Дата", "Категория", "Наименование", "Магазин/поставщик",
-    "Количество", "Единица измерения", "Цена за единицу",
-    "Сумма", "Доставка", "Способ оплаты"
+    "Дата", "Проект", "Категория", "Наименование", "Магазин/поставщик",
+    "Количество", "Единица измерения", "Цена за единицу", "Сумма", "Доставка", "Способ оплаты"
 ]
  
  
@@ -85,6 +74,24 @@ def db_del(key):
     with shelve.open(DB_PATH) as db:
         if key in db:
             del db[key]
+ 
+ 
+# --- Проекты ---
+ 
+def get_projects() -> list:
+    return db_get("projects", [])
+ 
+def add_project(name: str):
+    projects = get_projects()
+    if name not in projects:
+        projects.append(name)
+        db_set("projects", projects)
+ 
+def get_current_project(uid: int) -> str:
+    return db_get(f"project_{uid}", "")
+ 
+def set_current_project(uid: int, name: str):
+    db_set(f"project_{uid}", name)
  
  
 # --- Google Sheets ---
@@ -162,10 +169,7 @@ async def parse_with_claude(text: str = None, image_bytes: bytes = None, mime: s
  
     if image_bytes:
         b64 = base64.standard_b64encode(image_bytes).decode()
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": mime, "data": b64}
-        })
+        content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}})
         content.append({"type": "text", "text": "Извлеки все товары из этого чека/накладной."})
     elif text:
         content.append({"type": "text", "text": text})
@@ -206,7 +210,6 @@ async def parse_with_claude(text: str = None, image_bytes: bytes = None, mime: s
     raw = raw.strip()
  
     result = json.loads(raw)
-    # Если вернулся словарь (один товар) — оборачиваем в список
     if isinstance(result, dict):
         result = [result]
     return result
@@ -216,10 +219,7 @@ async def parse_with_claude(text: str = None, image_bytes: bytes = None, mime: s
  
 def fmt_item(p: dict, idx: int = None, total_items: int = 1) -> str:
     prefix = f"*{idx}/{total_items}* " if total_items > 1 else ""
-    lines = [
-        f"{prefix}📋 *{p['category']}*",
-        f"📦 {p['name']}",
-    ]
+    lines = [f"{prefix}📋 *{p['category']}*", f"📦 {p['name']}"]
     if p.get("shop"):
         lines.append(f"🏪 {p['shop']}")
     lines.append(f"🔢 {p['quantity']} {p['unit']} × {p['price_per_unit']:,.0f}₽ = *{p['total']:,.0f}₽*")
@@ -232,9 +232,7 @@ def fmt_item(p: dict, idx: int = None, total_items: int = 1) -> str:
  
 def fmt_all_items(items: list) -> str:
     n = len(items)
-    parts = []
-    for i, item in enumerate(items, 1):
-        parts.append(fmt_item(item, i, n))
+    parts = [fmt_item(item, i+1, n) for i, item in enumerate(items)]
     total_sum = sum(p.get("total", 0) or 0 for p in items)
     total_delivery = sum(p.get("delivery", 0) or 0 for p in items)
     summary = f"\n💰 *Итого: {total_sum:,.0f}₽*"
@@ -243,18 +241,53 @@ def fmt_all_items(items: list) -> str:
     return "\n\n".join(parts) + summary
  
  
-def build_confirm_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Верно", callback_data="confirm_yes"),
-        InlineKeyboardButton(text="✏️ Исправить", callback_data="confirm_edit"),
-        InlineKeyboardButton(text="❌ Отмена", callback_data="confirm_no"),
-    ]])
+# --- Клавиатуры ---
+ 
+def build_confirm_kb(uid: int) -> InlineKeyboardMarkup:
+    project = get_current_project(uid)
+    project_btn = f"📁 {project}" if project else "📁 Проект не выбран"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Верно", callback_data="confirm_yes"),
+            InlineKeyboardButton(text="✏️ Исправить", callback_data="confirm_edit"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="confirm_no"),
+        ],
+        [
+            InlineKeyboardButton(text=project_btn, callback_data="show_projects"),
+            InlineKeyboardButton(text="➕ Новый проект", callback_data="new_project"),
+        ]
+    ])
  
  
-def build_pay_kb():
+def build_pay_kb(uid: int) -> InlineKeyboardMarkup:
+    project = get_current_project(uid)
+    project_btn = f"📁 {project}" if project else "📁 Проект не выбран"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💵 Наличные", callback_data="pay_cash"),
+            InlineKeyboardButton(text="💳 Карта", callback_data="pay_card"),
+        ],
+        [
+            InlineKeyboardButton(text=project_btn, callback_data="show_projects"),
+            InlineKeyboardButton(text="➕ Новый проект", callback_data="new_project"),
+        ]
+    ])
+ 
+ 
+def build_projects_kb() -> InlineKeyboardMarkup:
+    projects = get_projects()
+    rows = []
+    # По 2 проекта в ряд
+    for i in range(0, len(projects), 2):
+        row = [InlineKeyboardButton(text=p, callback_data=f"select_project_{p}") for p in projects[i:i+2]]
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+ 
+ 
+def build_cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="💵 Наличные", callback_data="pay_cash"),
-        InlineKeyboardButton(text="💳 Карта", callback_data="pay_card"),
+        InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")
     ]])
  
  
@@ -262,12 +295,14 @@ def build_pay_kb():
  
 @dp.message(CommandStart())
 async def cmd_start(msg: Message):
+    uid = msg.from_user.id
+    project = get_current_project(uid)
+    project_info = f"📁 Текущий проект: *{project}*" if project else "📁 Проект не выбран"
     await msg.answer(
-        "👋 Привет! Я сметчик для флип-проекта.\n\n"
-        "Просто напиши что купил или пришли фото чека — я всё запишу в таблицу.\n\n"
-        "Пример:\n"
-        "_обои 5 рулонов 4500 руб Леруа_\n\n"
-        "Или отправь фото накладной. Если в чеке несколько товаров — запишу каждый отдельной строкой.",
+        f"👋 Привет! Я сметчик для флип-проекта.\n\n"
+        f"{project_info}\n\n"
+        "Просто напиши что купил или пришли фото чека — запишу в таблицу.\n\n"
+        "Пример: _обои 5 рулонов 4500 руб Леруа_",
         parse_mode="Markdown"
     )
  
@@ -276,12 +311,11 @@ async def cmd_start(msg: Message):
 async def cmd_help(msg: Message):
     await msg.answer(
         "📖 *Как пользоваться:*\n\n"
-        "1. Напиши что купил или пришли фото чека\n"
-        "2. Я распознаю все товары и покажу список\n"
+        "1. Выбери проект (кнопка 📁 при отправке чека)\n"
+        "2. Напиши что купил или пришли фото чека\n"
         "3. Подтверди → выбери способ оплаты\n"
         "4. Каждый товар — отдельная строка в таблице ✅\n\n"
-        "*Категории:*\n"
-        + "\n".join(f"• {c}" for c in CATEGORIES),
+        "*Категории:*\n" + "\n".join(f"• {c}" for c in CATEGORIES),
         parse_mode="Markdown"
     )
  
@@ -300,20 +334,36 @@ async def process_input(msg: Message, text: str = None, image_bytes: bytes = Non
  
     await wait.delete()
  
+    project = get_current_project(uid)
+    project_line = f"\n\n📁 *Проект: {project}*" if project else "\n\n📁 *Проект не выбран*"
+ 
     n = len(items)
     header = f"Нашёл *{n} товар{'а' if 2 <= n <= 4 else 'ов' if n >= 5 else ''}*:\n\n" if n > 1 else ""
-    text_out = header + fmt_all_items(items) + "\n\n*Всё верно?*"
-    sent = await msg.answer(text_out, parse_mode="Markdown", reply_markup=build_confirm_kb())
+    text_out = header + fmt_all_items(items) + project_line + "\n\n*Всё верно?*"
+    sent = await msg.answer(text_out, parse_mode="Markdown", reply_markup=build_confirm_kb(uid))
  
-    # Сохраняем по ID отправленного сообщения с кнопками
     db_set(f"pending_{sent.message_id}", {
         "items": items,
         "date": str(today_msk()),
+        "uid": uid,
     })
  
  
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_text(msg: Message):
+    # Проверяем не ожидаем ли ввод нового проекта
+    uid = msg.from_user.id
+    if db_get(f"awaiting_project_{uid}"):
+        db_del(f"awaiting_project_{uid}")
+        name = msg.text.strip()
+        if name:
+            add_project(name)
+            set_current_project(uid, name)
+            await msg.answer(
+                f"✅ Проект *{name}* создан и выбран.",
+                parse_mode="Markdown"
+            )
+        return
     await process_input(msg, text=msg.text)
  
  
@@ -346,20 +396,70 @@ async def confirm_no(cb: CallbackQuery):
 @dp.callback_query(F.data == "confirm_edit")
 async def confirm_edit(cb: CallbackQuery):
     await cb.answer()
-    await cb.message.answer(
-        "✏️ Напиши исправленный вариант — я распознаю заново.",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    await cb.message.answer("✏️ Напиши исправленный вариант — распознаю заново.")
  
  
 @dp.callback_query(F.data == "confirm_yes")
 async def confirm_yes(cb: CallbackQuery):
+    uid = cb.from_user.id
+    # Обновляем проект в pending на актуальный
+    msg_id = cb.message.message_id
+    pending = db_get(f"pending_{msg_id}")
+    if pending:
+        pending["uid"] = uid
+        db_set(f"pending_{msg_id}", pending)
+ 
     await cb.answer()
     await cb.message.edit_text(
         cb.message.text + "\n\n💳 *Способ оплаты?*",
         parse_mode="Markdown",
-        reply_markup=build_pay_kb()
+        reply_markup=build_pay_kb(uid)
     )
+ 
+ 
+@dp.callback_query(F.data == "show_projects")
+async def show_projects(cb: CallbackQuery):
+    await cb.answer()
+    projects = get_projects()
+    if not projects:
+        await cb.message.answer(
+            "Проектов пока нет. Нажми ➕ Новый проект чтобы создать.",
+            reply_markup=build_cancel_kb()
+        )
+        return
+    await cb.message.answer(
+        "📁 *Выбери проект:*",
+        parse_mode="Markdown",
+        reply_markup=build_projects_kb()
+    )
+ 
+ 
+@dp.callback_query(F.data == "new_project")
+async def new_project(cb: CallbackQuery):
+    uid = cb.from_user.id
+    await cb.answer()
+    db_set(f"awaiting_project_{uid}", True)
+    await cb.message.answer(
+        "Введи название нового проекта:",
+        reply_markup=build_cancel_kb()
+    )
+ 
+ 
+@dp.callback_query(F.data.startswith("select_project_"))
+async def select_project(cb: CallbackQuery):
+    uid = cb.from_user.id
+    name = cb.data[len("select_project_"):]
+    set_current_project(uid, name)
+    await cb.answer(f"Выбран проект: {name}")
+    await cb.message.edit_text(f"✅ Проект *{name}* выбран.", parse_mode="Markdown")
+ 
+ 
+@dp.callback_query(F.data == "main_menu")
+async def main_menu(cb: CallbackQuery):
+    uid = cb.from_user.id
+    db_del(f"awaiting_project_{uid}")
+    await cb.answer()
+    await cb.message.edit_text("🏠 Главное меню. Отправь чек или напиши что купил.")
  
  
 async def save_to_sheet(cb: CallbackQuery, pay_method: str):
@@ -374,11 +474,13 @@ async def save_to_sheet(cb: CallbackQuery, pay_method: str):
  
     items = pending["items"]
     date_str = pending["date"]
+    project = get_current_project(uid)
  
     rows = []
     for p in items:
         rows.append([
             date_str,
+            project,
             p.get("category", ""),
             p.get("name", ""),
             p.get("shop", ""),
@@ -403,8 +505,9 @@ async def save_to_sheet(cb: CallbackQuery, pay_method: str):
  
     db_del(f"pending_{msg_id}")
     n = len(rows)
+    project_line = f" | 📁 {project}" if project else ""
     await cb.message.edit_text(
-        cb.message.text + f"\n\n✅ Записано {n} стр.! ({pay_method})",
+        cb.message.text + f"\n\n✅ Записано {n} стр.! ({pay_method}{project_line})",
         parse_mode="Markdown"
     )
  
@@ -428,4 +531,3 @@ async def main():
  
 if __name__ == "__main__":
     asyncio.run(main())
- 
